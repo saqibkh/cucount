@@ -1058,6 +1058,30 @@ def test_theta_binning_matches_brute_force(los):
     assert np.allclose(got, want, rtol=1e-9, atol=0)
 
 
+def test_auto_counts_from_theta_zero():
+    """cucount.types.count2 on one catalogue counts it against itself, then
+    subtracts the self pairs from the bin holding theta = 0. That needs every
+    self pair binned there: a unit vector dotted with itself can round above
+    1, and an unclamped acos dropped ~12% of them as NaN."""
+    pytest.importorskip('lsstypes')
+    from cucount.types import count2 as types_count2
+    rng = np.random.default_rng(45)
+    n = 3000
+    ra, dec = np.radians(rng.uniform(150., 160., n)), np.radians(rng.uniform(20., 30., n))
+    pos = np.column_stack([np.cos(dec) * np.cos(ra), np.cos(dec) * np.sin(ra), np.sin(dec)])
+    w = rng.uniform(0.5, 1.5, n)
+    assert np.any(np.einsum('ij,ij->i', pos, pos) > 1.), 'no self dot above 1: the test cannot fail'
+    theta_edges = np.linspace(0., 2., 9)
+    counts = types_count2(Particles(pos, w), battrs=BinAttrs(theta=theta_edges), backend='cpu')['weight']
+    got = np.asarray(counts.value()) * np.asarray(counts.norm)
+    theta = np.degrees(np.arccos(np.clip(pos @ pos.T, -1., 1.)))
+    ww = w[:, None] * w[None, :]
+    ti, ok = _bin_index(theta, theta_edges)
+    ok &= ~np.eye(n, dtype=bool)
+    want = np.bincount(ti[ok], weights=ww[ok], minlength=len(theta_edges) - 1)
+    assert np.allclose(got, want, rtol=1e-9, atol=1e-9 * want.max())
+
+
 @pytest.mark.parametrize('los', ['z', 'x', 'firstpoint', 'endpoint', 'midpoint'])
 def test_rp_pi_binning_matches_brute_force(los):
     pos1, w1 = sky_catalog(23)

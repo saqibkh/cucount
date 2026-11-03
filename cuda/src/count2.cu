@@ -13,6 +13,7 @@ using cucount::pairmath::set_legendre;
 using cucount::pairmath::get_bessel;
 using cucount::pairmath::compute_spin_projection_cartesian;
 using cucount::pairmath::compute_pair_mu;
+using cucount::pairmath::clamp_unit;
 using cucount::pairmath::pair_bitwise_weight;
 
 
@@ -216,7 +217,8 @@ __device__ inline void add_weight2(
             value = mu;
         }
         else if (var == VAR_THETA) {
-            value = acos(dot(sposition1, sposition2)) / DTORAD;
+            // Clamped, as in count3: a self pair's dot can round above 1 (NaN).
+            value = acos(clamp_unit(dot(sposition1, sposition2))) / DTORAD;
         }
         else if (var == VAR_PI) {
             value = mu * s;

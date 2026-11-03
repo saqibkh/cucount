@@ -30,6 +30,7 @@ namespace {
 
 using pairmath::add3;
 using pairmath::compute_pair_mu;
+using pairmath::clamp_unit;
 using pairmath::compute_spin_projection_cartesian;
 using pairmath::dot3;
 using pairmath::get_bessel;
@@ -136,7 +137,10 @@ void add_weight2(double* counts,
 
         if (var == VAR_S) value = s;
         else if (var == VAR_MU) value = mu;
-        else if (var == VAR_THETA) value = std::acos(dot3(sposition1, sposition2)) / DTORAD;
+        // Clamped as the triplet counts do: a unit vector dotted with itself
+        // can round above 1, and acos would then return NaN, dropping the
+        // self pairs that cucount.types.count2 later subtracts from theta = 0.
+        else if (var == VAR_THETA) value = std::acos(clamp_unit(dot3(sposition1, sposition2))) / DTORAD;
         else if (var == VAR_PI) value = mu * s;
         else if (var == VAR_RP) value = (s2 <= 0.) ? 0. : std::sqrt(s2 - s2 * mu2);
 
