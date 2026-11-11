@@ -1,0 +1,88 @@
+name: GPU Simulator
+
+# Optional, non-required check. The hosted runners have no GPU, so this builds
+# the CUDA backend and runs the CUDA-vs-numpy tests in tests/test_cpu.py on a
+# simulated NVIDIA H100 (https://github.com/pantheongpu/pantheonsim). A
+# simulator cannot reproduce hardware-specific behavior or timing, so it
+# complements real-GPU testing and does not replace it.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "cuda/**"
+      - "cpu/**"
+      - "include/**"
+      - "src/**"
+      - "cucount/**"
+      - "tests/**"
+      - "CMakeLists.txt"
+      - "pyproject.toml"
+      - ".github/workflows/gpu-sim.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cuda-sim:
+    name: CUDA 13.0 and simulated H100
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up the simulated GPU and CUDA toolkit
+        uses: pantheongpu/setup-pantheonsim@ca87fe3143b29166822b923d6050945c5179408c # v0.1.5
+        with:
+          gpu: nvidia/h100
+          cuda-toolkit: "13.0"
+
+      - name: Install build and test dependencies
+        run: pip install numpy pytest pybind11 scikit-build-core cmake ninja
+
+      # 90-virtual embeds PTX only, which the simulator runs, and the
+      # simulator needs a shared CUDA runtime (nvcc links it statically by
+      # default). The JAX FFI module is not built, as in cpu.yml. The CPU
+      # backend stays on: the tests use it as the oracle in compare mode.
+      - name: Build and install (CUDA on)
+        env:
+          BUILD_FFI_CUCOUNT: "OFF"
+          CMAKE_BUILD_PARALLEL_LEVEL: "3"
+        run: |
+          pip install . -v --no-build-isolation \
+            -C cmake.define.CUCOUNT_BUILD_CUDA=ON \
+            -C cmake.define.CMAKE_CUDA_ARCHITECTURES=90-virtual \
+            -C cmake.define.CMAKE_CUDA_RUNTIME_LIBRARY=Shared \
+            -C cmake.define.CMAKE_CUDA_COMPILER=/usr/local/cuda-13.0/bin/nvcc
+
+      # The needs_cuda tests skip themselves when the CUDA extension is absent
+      # or no device is visible, so a broken setup would still report green.
+      # The check after pytest fails the job if any test was skipped for that
+      # reason, or if no CUDA test ran.
+      - name: Run the CUDA-oracle tests
+        run: |
+          vgpu run python -m pytest tests/test_cpu.py -v -rs -p no:cacheprovider \
+            --junitxml="$RUNNER_TEMP/junit.xml"
+          python - "$RUNNER_TEMP/junit.xml" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          cases = list(ET.parse(sys.argv[1]).getroot().iter('testcase'))
+          cuda = [c for c in cases if 'cuda' in c.get('name', '')]
+          unrun = [c.get('name') for c in cases if c.find('skipped') is not None
+                   and 'CUDA extension' in (c.find('skipped').get('message') or '')]
+          ran = sum(1 for c in cuda if c.find('skipped') is None)
+          print(f'{len(cases)} tests, {len(cuda)} with cuda in the name, {ran} ran, {len(unrun)} skipped')
+          if unrun or ran == 0:
+              sys.exit(f'CUDA tests were skipped or did not run: {unrun[:5]}')
+          PY
